@@ -1,0 +1,23 @@
+[package]
+name = "meterproxy"
+version = "0.2.0"
+edition = "2021"
+
+# No TLS feature: upstreams are addressed as http://host:port on the container
+# network, exactly as the Python original did. The public-internet hop belongs
+# to the gateway behind this proxy, not to this proxy.
+[dependencies]
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+serde_json = "1"
+bytes = "1"
+futures-util = "0.3"
+async-stream = "0.3"
+parking_lot = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

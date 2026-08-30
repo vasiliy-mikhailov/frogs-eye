@@ -1,0 +1,96 @@
+<!doctype html><html><head><meta charset="utf-8"><title>vLLM per-key rates</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><style>
+:root{--bg:#fbfbfa;--fg:#1a1a19;--mut:#6b6b68;--line:#e3e3e0;--card:#fff;--acc:#2f6f4e;--warn:#c05621}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#191918;--fg:#eeeeec;--mut:#9a9a96;
+  --line:#2f2f2d;--card:#211f1e;--acc:#68b98c;--warn:#e88c4d}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);padding:20px;
+  font:14px/1.5 ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif}
+h1{font-size:17px;margin:0 0 2px}.sub{color:var(--mut);font-size:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--mut);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+.k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.hi{font-weight:600;color:var(--acc)}.mut{color:var(--mut)}
+.note{font-size:11px;color:var(--mut);margin-top:10px}
+.ch{font-size:13px;font-weight:600;margin-bottom:8px}
+canvas{width:100%;height:170px;display:block}
+.leg{display:flex;gap:14px;font-size:11px;color:var(--mut);margin-top:8px;flex-wrap:wrap}
+.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+</style></head><body>
+<h1>Per-request rates by API key</h1>
+<div class="sub" id="sub">loading…</div>
+<div class="card"><div class="ch">generation tok/s — p05 (worst 5%)</div><canvas id="cg"></canvas>
+<div class="leg" id="lg"></div></div>
+<div class="card"><div class="ch">prefill tok/s — p05 (worst 5%) <span class="mut">(includes queue wait)</span></div>
+<canvas id="cp"></canvas><div class="leg" id="lp"></div></div>
+<div class="card"><div id="t"></div>
+<div class="note">Each request contributes <b>prompt_tokens / TTFT</b> and
+<b>completion_tokens / (end − TTFT)</b>. Percentiles are over the sliding window.
+For a RATE the SLA floor is <b>p05</b> (the 5th percentile) — 95% of requests were at least
+that fast. Written zero-padded so it cannot be misread as p95. p95 of a rate is the best-case tail, which is why p95 &gt; p50 here and why it is
+not the number to promise.
+Non-streaming requests have no first-token event and are excluded from rate percentiles
+(counted under <i>measurable</i>).
+<br><b>Prefill rate includes queue wait</b>, because TTFT is measured at the client edge and the
+proxy cannot see vLLM's internal queue time. On a saturated engine this understates true prefill
+speed — compare against <code>vllm:request_queue_time_seconds</code> to separate the two.</div></div>
+<script>
+const f=v=>v==null?'—':v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(1);
+const s2=v=>v==null?'—':(v<1?(v*1000).toFixed(0)+'ms':v.toFixed(1)+'s');
+async function tick(){
+  let d;try{d=await (await fetch('data.json',{cache:'no-store'})).json()}catch(e){return}
+  document.getElementById('sub').textContent=
+    d.total+' requests in the last '+(d.window_s/60)+' min · updated '+new Date().toLocaleTimeString();
+  let h='<table><tr><th>api key</th><th>model</th><th class="r">req</th><th class="r">measurable</th>'+
+    '<th class="r">prefill p05 worst</th><th class="r">prefill p50</th>'+
+    '<th class="r">gen p05 worst</th><th class="r">gen p50</th>'+
+    '<th class="r">ttft p50</th><th class="r">ttft p95</th>'+
+    '<th class="r">prompt tok</th><th class="r">gen tok</th></tr>';
+  if(!d.rows.length)h+='<tr><td colspan="10" class="mut">no traffic through the proxy yet</td></tr>';
+  for(const r of d.rows){
+    h+='<tr><td class="k">'+(r.label||r.key)+'</td><td class="mut">'+r.model+'</td>'+
+       '<td class="r">'+r.requests+'</td><td class="r mut">'+r.measurable+'</td>'+
+       '<td class="r hi">'+f(r.prefill.p5)+'</td><td class="r">'+f(r.prefill.p50)+'</td>'+
+       '<td class="r hi">'+f(r.gen.p5)+'</td><td class="r">'+f(r.gen.p50)+'</td>'+
+       '<td class="r mut">'+s2(r.ttft.p50)+'</td><td class="r mut">'+s2(r.ttft.p95)+'</td>'+
+       '<td class="r mut">'+f(r.prompt_tokens)+'</td><td class="r mut">'+f(r.completion_tokens)+'</td></tr>';
+  }
+  document.getElementById('t').innerHTML=h+'</table>';
+}
+const PAL=['#2f6f4e','#c05621','#2b6cb0','#805ad5','#b7791f','#9b2c2c'];
+const H={};
+function plot(id,legid,field){
+  const cv=document.getElementById(id),d=window.devicePixelRatio||1;
+  const W=cv.clientWidth,Hh=cv.clientHeight;cv.width=W*d;cv.height=Hh*d;
+  const x=cv.getContext('2d');x.scale(d,d);x.clearRect(0,0,W,Hh);
+  const pad={l:46,r:8,t:8,b:16},keys=Object.keys(H);
+  const cs=getComputedStyle(document.documentElement);
+  const line=cs.getPropertyValue('--line').trim(),mut=cs.getPropertyValue('--mut').trim();
+  let mx=0,n=0;
+  for(const k of keys){for(const p of H[k]){if(p[field]>mx)mx=p[field]}n=Math.max(n,H[k].length)}
+  mx=mx<=0?1:mx*1.15;
+  x.strokeStyle=line;x.fillStyle=mut;x.font='10px ui-sans-serif';
+  for(let i=0;i<=3;i++){const y=pad.t+(Hh-pad.t-pad.b)*i/3,v=mx*(1-i/3);
+    x.beginPath();x.moveTo(pad.l,y);x.lineTo(W-pad.r,y);x.stroke();
+    x.fillText(v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(v<10?1:0),4,y+3)}
+  if(!n){x.fillText('waiting for requests…',pad.l,Hh/2);document.getElementById(legid).innerHTML='';return}
+  let leg='';
+  keys.forEach((k,ki)=>{const col=PAL[ki%PAL.length];
+    leg+='<span><i class="sw" style="background:'+col+'"></i>'+k+'</span>';
+    x.strokeStyle=col;x.lineWidth=1.7;x.beginPath();
+    H[k].forEach((p,i)=>{const px=pad.l+(W-pad.l-pad.r)*(n<2?1:i/(n-1)),
+      py=pad.t+(Hh-pad.t-pad.b)*(1-(p[field]||0)/mx);i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke()});
+  document.getElementById(legid).innerHTML=leg;
+}
+const _t=tick;
+tick=async function(){await _t();
+  try{const d=await (await fetch('data.json',{cache:'no-store'})).json();
+    for(const r of d.rows){const k=r.label||r.key;H[k]=H[k]||[];
+      H[k].push({g:r.gen.p5||0,p:r.prefill.p5||0});if(H[k].length>360)H[k].shift()}
+    plot('cg','lg','g');plot('cp','lp','p');
+  }catch(e){}
+};
+tick();setInterval(tick,5000);
+</script></body></html>
