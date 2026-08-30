@@ -1,0 +1,506 @@
+<title>Three Hostnames, One Request</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F4F6F8;
+  --surface:#FFFFFF;
+  --surface-2:#E9EEF3;
+  --ink:#0F1721;
+  --mut:#586674;
+  --line:#CBD5DE;
+  --hot:#A8500B;
+  --cool:#2A6494;
+  --danger:#A8231C;
+  --green:#2E6B47;
+  --hot-soft:#F3DEC7;
+  --green-soft:#DCEBE1;
+  --band-proxy:#FBF4EB;
+  --band-mh:#EDF2F7;
+  --band-lf:#EAF0F6;
+  --ghost:#F1F4F7;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E1216;
+    --surface:#161C23;
+    --surface-2:#1E262F;
+    --ink:#E2E8EE;
+    --mut:#8FA0B0;
+    --line:#2B3540;
+    --hot:#E9973F;
+    --cool:#6EACE0;
+    --danger:#E5695F;
+    --green:#5FB37E;
+    --hot-soft:#3A2913;
+    --green-soft:#13251A;
+    --band-proxy:#1E1710;
+    --band-mh:#131A21;
+    --band-lf:#121A22;
+    --ghost:#191F26;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E1216;
+  --surface:#161C23;
+  --surface-2:#1E262F;
+  --ink:#E2E8EE;
+  --mut:#8FA0B0;
+  --line:#2B3540;
+  --hot:#E9973F;
+  --cool:#6EACE0;
+  --danger:#E5695F;
+  --green:#5FB37E;
+  --hot-soft:#3A2913;
+  --green-soft:#13251A;
+  --band-proxy:#1E1710;
+  --band-mh:#131A21;
+  --band-lf:#121A22;
+  --ghost:#191F26;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--ground);color:var(--ink);
+  font:400 16px/1.6 "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  padding:48px 24px 96px;
+}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+
+header{display:flex;flex-direction:column;gap:12px;max-width:70ch}
+.eyebrow{
+  font:500 11.5px/1 "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--mut);
+}
+h1{
+  font:700 42px/1.08 "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif;
+  margin:0;text-wrap:balance;letter-spacing:-.01em;
+}
+.lede{margin:0;color:var(--mut);font-size:17px;max-width:64ch}
+.lede strong{color:var(--ink);font-weight:600}
+
+h2{
+  font:600 13px/1 "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin:0 0 4px;
+}
+
+figure{
+  margin:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:10px;padding:22px 22px 18px;display:flex;flex-direction:column;gap:14px;
+}
+.scroll{overflow-x:auto}
+svg{display:block;max-width:100%;height:auto;min-width:900px}
+figcaption{
+  font-size:13.5px;line-height:1.55;color:var(--mut);
+  border-top:1px solid var(--line);padding-top:12px;max-width:82ch;
+}
+figcaption b{color:var(--ink);font-weight:600}
+
+section{display:flex;flex-direction:column;gap:14px}
+code{
+  font:400 13.5px/1.4 "IBM Plex Mono", ui-monospace, monospace;
+  background:var(--surface-2);padding:1px 5px;border-radius:4px;
+}
+pre{
+  margin:0;background:var(--surface);border:1px solid var(--line);border-radius:8px;
+  padding:16px 18px;overflow-x:auto;
+  font:400 13px/1.65 "IBM Plex Mono", ui-monospace, monospace;
+}
+pre b{color:var(--green);font-weight:500}
+
+table{border-collapse:collapse;width:100%;font-size:14px}
+caption{text-align:left;color:var(--mut);font-size:13px;padding-bottom:10px}
+th,td{text-align:left;padding:9px 14px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{
+  font:500 11px/1 "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--mut);padding-bottom:8px;
+}
+td:first-child{
+  font:500 13px/1.5 "IBM Plex Mono", ui-monospace, monospace;
+  white-space:nowrap;padding-right:26px;
+}
+td.owns{color:var(--mut)}
+
+.flags{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.flag{
+  border:1px solid var(--line);border-left:3px solid var(--danger);
+  border-radius:8px;background:var(--surface);padding:15px 17px;
+  display:flex;flex-direction:column;gap:6px;
+}
+.flag.open{border-left-color:var(--cool)}
+.flag h3{margin:0;font:600 14.5px/1.3 "IBM Plex Sans", sans-serif}
+.flag p{margin:0;font-size:13.5px;line-height:1.55;color:var(--mut)}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Target topology · 30 Aug 2026</div>
+  <h1>Three Hostnames, One Request</h1>
+  <p class="lede"><strong>LiteLLM is what answers at inference.mikhailov.tech</strong>, and
+  <strong>meterproxy stays in front of it</strong> — because LiteLLM can price a request but cannot
+  measure how fast the box served it. Everything reaches the engines by public hostname, so a second
+  GPU joins the fleet by DNS record.</p>
+</header>
+
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1330 1025" role="img"
+       aria-label="Sequence diagram grouped by deployment. An agent posts to inference.mikhailov.tech, the proxy deployment, which holds Caddy, meterproxy and LiteLLM. meterproxy sees the original consumer key and passes it through unchanged. LiteLLM authenticates the key, checks budget, and forwards over the public internet to inference1.mikhailov.tech, the mh deployment holding a second Caddy and vLLM. Tokens stream back through every hop to the agent; meterproxy times that stream to derive prefill and generation rates per key. Afterwards LiteLLM prices the usage into Postgres and posts an asynchronous trace to Langfuse. A greyed stub shows inference2, the Strix Halo box, joining later. A red dashed path shows the bypass a public inference1 hostname opens.">
+    <defs>
+      <marker id="ah-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--hot)"/>
+      </marker>
+      <marker id="ah-cool" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--cool)"/>
+      </marker>
+      <marker id="ah-danger" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--danger)"/>
+      </marker>
+      <marker id="ah-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--mut)"/>
+      </marker>
+    </defs>
+
+    <!-- ============ deployment bands ============ -->
+    <g font-family="'IBM Plex Mono', monospace" font-size="10.5" letter-spacing="1.1">
+      <rect x="172" y="16" width="568" height="820" rx="8" fill="var(--band-proxy)" stroke="var(--hot)" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="186" y="38" fill="var(--hot)" font-weight="500">PROXY DEPLOYMENT — its own docker stack</text>
+      <text x="186" y="53" fill="var(--mut)">inference.mikhailov.tech</text>
+
+      <rect x="752" y="16" width="390" height="820" rx="8" fill="var(--band-mh)" stroke="var(--line)" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="766" y="38" fill="var(--ink)" font-weight="500">mh — RTX PRO 6000 + RTX 5090</text>
+      <text x="766" y="53" fill="var(--mut)">inference1.mikhailov.tech</text>
+
+      <rect x="1154" y="16" width="158" height="820" rx="8" fill="var(--band-lf)" stroke="var(--cool)" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="1166" y="38" fill="var(--cool)" font-weight="500">ANALYTICS</text>
+      <text x="1166" y="53" fill="var(--mut)">langfuse.…</text>
+    </g>
+
+    <!-- ============ participants ============ -->
+    <g font-family="'IBM Plex Sans', sans-serif">
+      <rect x="18" y="66" width="134" height="62" rx="6" fill="var(--surface-2)" stroke="var(--line)"/>
+      <text x="85" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Agent</text>
+      <text x="85" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">bump-java</text>
+      <text x="85" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">java-faker</text>
+
+      <rect x="189" y="66" width="132" height="62" rx="6" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="255" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Caddy</text>
+      <text x="255" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">TLS</text>
+      <text x="255" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">host routing</text>
+
+      <rect x="352" y="66" width="156" height="62" rx="6" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.8"/>
+      <text x="430" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">meterproxy</text>
+      <text x="430" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">the SLA meter</text>
+      <text x="430" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">kept, unchanged</text>
+
+      <rect x="523" y="62" width="190" height="70" rx="6" fill="var(--hot-soft)" stroke="var(--hot)" stroke-width="2.2"/>
+      <text x="618" y="88" text-anchor="middle" font-size="15.5" font-weight="700" fill="var(--ink)" font-family="'IBM Plex Sans Condensed','IBM Plex Sans',sans-serif">LiteLLM Proxy</text>
+      <text x="618" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">keys · budgets · limits</text>
+      <text x="618" y="120" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">routing · pricing</text>
+
+      <rect x="761" y="66" width="132" height="62" rx="6" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="827" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Caddy</text>
+      <text x="827" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">TLS</text>
+      <text x="827" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">bearer gate</text>
+
+      <rect x="950" y="66" width="160" height="62" rx="6" fill="var(--surface)" stroke="var(--line)"/>
+      <text x="1030" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">vLLM</text>
+      <text x="1030" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">qwen-3.8-27b</text>
+      <text x="1030" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">paddleocr-vl-1.6</text>
+
+      <rect x="1164" y="66" width="134" height="62" rx="6" fill="var(--surface)" stroke="var(--cool)"/>
+      <text x="1231" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ink)">Langfuse</text>
+      <text x="1231" y="106" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">traces</text>
+      <text x="1231" y="119" text-anchor="middle" font-size="10.5" font-family="'IBM Plex Mono', monospace" fill="var(--mut)">analytics</text>
+    </g>
+
+    <!-- ============ lifelines ============ -->
+    <g stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4">
+      <line x1="85"   y1="132" x2="85"   y2="816"/>
+      <line x1="255"  y1="132" x2="255"  y2="816"/>
+      <line x1="430"  y1="132" x2="430"  y2="816"/>
+      <line x1="618"  y1="134" x2="618"  y2="816"/>
+      <line x1="827"  y1="132" x2="827"  y2="816"/>
+      <line x1="1030" y1="132" x2="1030" y2="816"/>
+      <line x1="1231" y1="132" x2="1231" y2="816"/>
+    </g>
+
+    <g font-family="'IBM Plex Sans', sans-serif" fill="var(--ink)">
+
+    <!-- M1 -->
+    <text x="170" y="166" text-anchor="middle" font-size="12" font-weight="500">POST /v1/chat/completions</text>
+    <text x="170" y="180" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">Bearer sk-bumpjava-…  stream: true</text>
+    <line x1="85" y1="192" x2="249" y2="192" stroke="var(--hot)" stroke-width="1.8" marker-end="url(#ah-hot)"/>
+
+    <!-- M2 -->
+    <text x="342" y="206" text-anchor="middle" font-size="12" font-weight="500">routed by Host header</text>
+    <text x="342" y="220" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">→ meterproxy:8091</text>
+    <line x1="255" y1="232" x2="424" y2="232" stroke="var(--hot)" stroke-width="1.8" marker-end="url(#ah-hot)"/>
+
+    <!-- M3 -->
+    <text x="524" y="246" text-anchor="middle" font-size="12" font-weight="600" fill="var(--green)">consumer key passed through, not swapped</text>
+    <text x="524" y="260" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">→ litellm:4000 — this is what preserves attribution</text>
+    <line x1="430" y1="272" x2="612" y2="272" stroke="var(--hot)" stroke-width="1.8" marker-end="url(#ah-hot)"/>
+
+    <!-- S1 -->
+    <rect x="500" y="292" width="236" height="46" rx="5" fill="var(--surface)" stroke="var(--hot)"/>
+    <text x="618" y="311" text-anchor="middle" font-size="12" font-weight="600">authenticate the virtual key</text>
+    <text x="618" y="327" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">RPM · TPM · budget — Postgres, cached</text>
+
+    <!-- S2 -->
+    <rect x="500" y="350" width="236" height="46" rx="5" fill="var(--surface)" stroke="var(--hot)"/>
+    <text x="618" y="369" text-anchor="middle" font-size="12" font-weight="600">resolve, rewrite, forward</text>
+    <text x="618" y="385" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">alias→deployment · engine key · +usage</text>
+
+    <!-- M4 : the internet hop -->
+    <rect x="540" y="410" width="364" height="15" fill="var(--surface)"/>
+    <text x="722" y="422" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">https://inference1.mikhailov.tech/qwen-3.8-27b-nvfp4/v1/…</text>
+    <text x="722" y="440" text-anchor="middle" font-size="12" font-weight="600">forwarded over the public internet</text>
+    <line x1="618" y1="452" x2="821" y2="452" stroke="var(--hot)" stroke-width="2.6" marker-end="url(#ah-hot)"/>
+    <text x="722" y="469" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--danger)">hairpin via the router — crosses WiFi twice today</text>
+
+    <!-- M5 -->
+    <text x="928" y="500" text-anchor="middle" font-size="12" font-weight="500">bearer verified at the edge</text>
+    <text x="928" y="514" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">→ inference-vllm:8000</text>
+    <line x1="827" y1="526" x2="1024" y2="526" stroke="var(--hot)" stroke-width="1.8" marker-end="url(#ah-hot)"/>
+
+    <!-- S3 -->
+    <rect x="935" y="548" width="190" height="46" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+    <text x="1030" y="567" text-anchor="middle" font-size="12" font-weight="600">prefill · MTP n=3 · decode</text>
+    <text x="1030" y="583" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">up to 24 concurrent sequences</text>
+
+    <!-- M6 : stream back through every hop -->
+    <rect x="350" y="608" width="420" height="15" fill="var(--surface)"/>
+    <text x="560" y="620" text-anchor="middle" font-size="12" font-weight="600">SSE chunks streamed straight through, unbuffered</text>
+    <line x1="1030" y1="638" x2="91" y2="638" stroke="var(--hot)" stroke-width="2.6" marker-end="url(#ah-hot)"/>
+    <circle cx="827" cy="638" r="3.4" fill="var(--hot)"/>
+    <circle cx="618" cy="638" r="3.4" fill="var(--hot)"/>
+    <circle cx="430" cy="638" r="4.6" fill="var(--green)"/>
+    <circle cx="255" cy="638" r="3.4" fill="var(--hot)"/>
+    <rect x="300" y="646" width="292" height="14" fill="var(--surface)"/>
+    <text x="446" y="657" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--green)">meterproxy times this — first token, then the rest</text>
+
+    <!-- M7 -->
+    <rect x="700" y="672" width="280" height="14" fill="var(--surface)"/>
+    <text x="840" y="683" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">prompt_tokens · completion_tokens</text>
+    <text x="840" y="700" text-anchor="middle" font-size="12" font-weight="500">final chunk carries usage{}</text>
+    <line x1="1030" y1="712" x2="624" y2="712" stroke="var(--hot)" stroke-width="1.8" marker-end="url(#ah-hot)"/>
+
+    <!-- meterproxy: what it alone can measure -->
+    <rect x="338" y="734" width="180" height="70" rx="5" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.6"/>
+    <text x="428" y="753" text-anchor="middle" font-size="11.5" font-weight="600">what only it can measure</text>
+    <text x="428" y="769" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">prefill tok/s · gen tok/s</text>
+    <text x="428" y="782" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">per consumer key</text>
+    <text x="428" y="796" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">strips the usage chunk</text>
+
+    <!-- litellm: price -->
+    <rect x="526" y="734" width="196" height="70" rx="5" fill="var(--hot-soft)" stroke="var(--hot)" stroke-width="1.6"/>
+    <text x="624" y="753" text-anchor="middle" font-size="11.5" font-weight="600">price it, then record it</text>
+    <text x="624" y="769" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">tokens × rate card</text>
+    <text x="624" y="782" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">spend → Postgres</text>
+    <text x="624" y="796" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="9.5" fill="var(--mut)">budget decremented</text>
+
+    <!-- M8 async trace -->
+    <rect x="800" y="806" width="370" height="14" fill="var(--surface)"/>
+    <text x="985" y="817" text-anchor="middle" font-size="12" font-weight="500" fill="var(--cool)">batched trace — never blocks the response</text>
+    <line x1="618" y1="828" x2="1225" y2="828" stroke="var(--cool)" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#ah-cool)"/>
+
+    <!-- inference2 -->
+    <rect x="910" y="866" width="300" height="52" rx="8" fill="var(--ghost)" stroke="var(--mut)" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="1060" y="887" text-anchor="middle" font-size="12" font-weight="600" fill="var(--mut)">Strix Halo — a second deployment, later</text>
+    <text x="1060" y="904" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">inference2.mikhailov.tech · joins by DNS alone</text>
+    <line x1="628" y1="846" x2="904" y2="884" stroke="var(--mut)" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ah-mut)"/>
+    <rect x="646" y="848" width="216" height="14" fill="var(--ground)"/>
+    <text x="754" y="859" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">same alias · no consumer change</text>
+
+    <!-- bypass -->
+    <polyline points="85,846 85,952 827,952 827,850" fill="none" stroke="var(--danger)"
+              stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#ah-danger)"/>
+    <rect x="240" y="944" width="380" height="16" fill="var(--ground)"/>
+    <text x="430" y="957" text-anchor="middle" font-size="12" font-weight="600" fill="var(--danger)">the hole a public inference1 opens</text>
+    <text x="430" y="975" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">skips the meter, the budgets, the limits and the traces</text>
+    <text x="430" y="990" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">close it: engine-only bearer · allowlist · rate limit</text>
+    </g>
+
+    <!-- legend -->
+    <g font-family="'IBM Plex Sans', sans-serif" font-size="11.5" fill="var(--mut)">
+      <line x1="20" y1="1004" x2="1310" y2="1004" stroke="var(--line)"/>
+      <line x1="24" y1="1019" x2="60" y2="1019" stroke="var(--hot)" stroke-width="2.2"/>
+      <text x="68" y="1023">synchronous — the agent is waiting on this</text>
+      <line x1="420" y1="1019" x2="456" y2="1019" stroke="var(--cool)" stroke-width="2.2" stroke-dasharray="6 4"/>
+      <text x="464" y="1023">asynchronous — telemetry, off the hot path</text>
+      <line x1="840" y1="1019" x2="876" y2="1019" stroke="var(--danger)" stroke-width="2.2" stroke-dasharray="6 4"/>
+      <text x="884" y="1023">must be blocked</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>meterproxy sits <b>in front of</b> LiteLLM, not behind it. That position is the whole
+  trick: it still sees the consumer's own bearer token, so its per-key rate histograms and the Grafana
+  SLA dashboard keep working untouched. Put it behind LiteLLM instead and it would see one static
+  engine key on every request — the rates survive, the <b>attribution</b> dies.</figcaption>
+</figure>
+
+<section>
+  <h2>Binding meterproxy — two environment variables, no code change</h2>
+  <pre>ROUTES        {"/qwen-3.8-27b-nvfp4": <b>"litellm:4000"</b>, "/paddleocr-vl-1.6": <b>"litellm:4000"</b>}
+UPSTREAM_KEY  <b>""</b>          # was the engine key. Empty = pass the consumer's key through.
+CLIENT_KEYS   unchanged     # still the label table: sk-bumpjava-… → "bump-java"</pre>
+  <p style="margin:0;max-width:70ch;color:var(--mut);font-size:14.5px">Emptying <code>UPSTREAM_KEY</code>
+  is the load-bearing change. The existing code only rewrites the header when a key is set —
+  <code>if label and UPSTREAM_KEY</code> — so clearing it makes meterproxy forward the consumer's own
+  token to LiteLLM, which is exactly what LiteLLM needs in order to recognise the virtual key. The
+  labelling path is untouched, so every existing Grafana panel keeps its series names.</p>
+  <p style="margin:0;max-width:70ch;color:var(--mut);font-size:14.5px">One free win falls out of this
+  ordering. meterproxy already injects <code>stream_options.include_usage</code> and <em>strips the
+  extra usage chunk back out</em> before the client sees it. Sitting in front, it does that stripping
+  on LiteLLM's behalf — which neutralises the one behavioural risk the research flagged, where LiteLLM
+  can leak a trailing <code>choices:[]</code> frame to fleets that never asked for it.</p>
+</section>
+
+<section>
+  <h2>What changes</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1140 236" role="img"
+         aria-label="Comparison: today an agent reaches Caddy then meterproxy then vLLM inside one host. In the target, the agent reaches a proxy deployment holding Caddy, meterproxy and LiteLLM, which crosses the public internet to the mh deployment holding a second Caddy and vLLM.">
+      <defs>
+        <marker id="ah2-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--mut)"/>
+        </marker>
+        <marker id="ah2-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--hot)"/>
+        </marker>
+      </defs>
+      <g font-family="'IBM Plex Sans', sans-serif" font-size="12">
+        <text x="16" y="20" font-family="'IBM Plex Mono', monospace" font-size="10.5"
+              letter-spacing="1.4" fill="var(--mut)">TODAY — one deployment, engine invisible from outside</text>
+        <g transform="translate(0,30)">
+          <rect x="180" y="-6" width="524" height="56" rx="7" fill="var(--band-mh)" stroke="var(--line)" stroke-dasharray="5 4"/>
+          <text x="192" y="60" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">mh · one bridge network</text>
+          <rect x="16"  y="6" width="112" height="34" rx="5" fill="var(--surface-2)" stroke="var(--line)"/>
+          <text x="72"  y="28" text-anchor="middle" fill="var(--ink)">Agent</text>
+          <line x1="128" y1="23" x2="186" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="192" y="6" width="128" height="34" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+          <text x="256" y="28" text-anchor="middle" fill="var(--ink)">Caddy</text>
+          <line x1="320" y1="23" x2="378" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="384" y="6" width="132" height="34" rx="5" fill="var(--green-soft)" stroke="var(--green)"/>
+          <text x="450" y="28" text-anchor="middle" fill="var(--ink)">meterproxy</text>
+          <line x1="516" y1="23" x2="570" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="576" y="6" width="118" height="34" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+          <text x="635" y="28" text-anchor="middle" fill="var(--ink)">vLLM</text>
+          <text x="722" y="28" font-family="'IBM Plex Mono', monospace" font-size="10.5" fill="var(--mut)">rates measured, nothing priced or capped</text>
+        </g>
+
+        <text x="16" y="144" font-family="'IBM Plex Mono', monospace" font-size="10.5"
+              letter-spacing="1.4" fill="var(--hot)">TARGET — meterproxy keeps its seat, LiteLLM takes the one behind it</text>
+        <g transform="translate(0,154)">
+          <rect x="180" y="-6" width="486" height="56" rx="7" fill="var(--band-proxy)" stroke="var(--hot)" stroke-dasharray="5 4"/>
+          <text x="192" y="60" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--hot)">inference.mikhailov.tech</text>
+          <rect x="752" y="-6" width="330" height="56" rx="7" fill="var(--band-mh)" stroke="var(--line)" stroke-dasharray="5 4"/>
+          <text x="764" y="60" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--mut)">inference1.mikhailov.tech</text>
+
+          <rect x="16"  y="6" width="112" height="34" rx="5" fill="var(--surface-2)" stroke="var(--line)"/>
+          <text x="72"  y="28" text-anchor="middle" fill="var(--ink)">Agent</text>
+          <line x1="128" y1="23" x2="186" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="192" y="6" width="104" height="34" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+          <text x="244" y="28" text-anchor="middle" fill="var(--ink)">Caddy</text>
+          <line x1="296" y1="23" x2="330" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="336" y="6" width="128" height="34" rx="5" fill="var(--green-soft)" stroke="var(--green)" stroke-width="1.6"/>
+          <text x="400" y="28" text-anchor="middle" fill="var(--ink)">meterproxy</text>
+          <line x1="464" y1="23" x2="498" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="504" y="6" width="150" height="34" rx="5" fill="var(--hot-soft)" stroke="var(--hot)" stroke-width="1.8"/>
+          <text x="579" y="28" text-anchor="middle" fill="var(--ink)" font-weight="600">LiteLLM Proxy</text>
+          <line x1="654" y1="23" x2="748" y2="23" stroke="var(--hot)" stroke-width="2.6" marker-end="url(#ah2-hot)"/>
+          <text x="701" y="14" text-anchor="middle" font-family="'IBM Plex Mono', monospace"
+                font-size="9.5" fill="var(--hot)">internet</text>
+          <rect x="764" y="6" width="104" height="34" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+          <text x="816" y="28" text-anchor="middle" fill="var(--ink)">Caddy</text>
+          <line x1="868" y1="23" x2="930" y2="23" stroke="var(--mut)" stroke-width="1.6" marker-end="url(#ah2-ink)"/>
+          <rect x="936" y="6" width="118" height="34" rx="5" fill="var(--surface)" stroke="var(--line)"/>
+          <text x="995" y="28" text-anchor="middle" fill="var(--ink)">vLLM</text>
+        </g>
+      </g>
+    </svg>
+    </div>
+    <figcaption>meterproxy does not move relative to the client — it stays the first thing that sees a
+    request with its real key. <b>LiteLLM slots in behind it</b>, and the seam between the two
+    deployments opens up where the single bridge network used to be.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Who owns what</h2>
+  <table>
+    <caption>Each hop earns its place by holding something no other hop can.</caption>
+    <thead>
+      <tr><th>Hop</th><th>Holds</th><th>Fails how</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Caddy · proxy</td>
+        <td>TLS, the public certificate, host routing</td>
+        <td class="owns">Cert renewal; a bad route 404s loudly</td>
+      </tr>
+      <tr>
+        <td>meterproxy</td>
+        <td>Per-key prefill tok/s, generation tok/s, TTFT percentiles — the SLA floor. Nothing else in the stack can produce these</td>
+        <td class="owns">Pure observation, no enforcement; if it dies the request path dies with it, so it must be as boring as it is today</td>
+      </tr>
+      <tr>
+        <td>LiteLLM Proxy</td>
+        <td>Virtual keys, budgets, TPM/RPM, model aliases, the rate card, which engine serves the request</td>
+        <td class="owns">Postgres unreachable → key lookups degrade; this becomes the new single point of failure</td>
+      </tr>
+      <tr>
+        <td>Caddy · mh</td>
+        <td>TLS at the engine edge, bearer enforcement, the allowlist</td>
+        <td class="owns">Misconfigured, it exposes the GPU to the open internet</td>
+      </tr>
+      <tr>
+        <td>vLLM</td>
+        <td>The model, the KV cache, batching, speculative decoding</td>
+        <td class="owns">Silently, as of this morning — a tool-call parse loop froze every endpoint for 3.5 h</td>
+      </tr>
+      <tr>
+        <td>Langfuse</td>
+        <td>Per-request traces, prompt and response bodies, per-consumer analytics</td>
+        <td class="owns">Down or slow → traces drop; the response path is unaffected by design</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Decide before building</h2>
+  <div class="flags">
+    <div class="flag">
+      <h3>inference1, inference2 and langfuse do not resolve</h3>
+      <p>No A record, no CNAME on any of the three. Caddy needs the name to resolve before it can obtain
+      a certificate, so this gates everything downstream. <code>inference1 → 77.37.246.197</code> is the
+      one to create first.</p>
+    </div>
+    <div class="flag">
+      <h3>The internet hop runs over WiFi</h3>
+      <p>The host sits behind NAT at <code>192.168.0.2</code> on <code>wlo1</code>; the wired
+      <code>eno2</code> is unplugged. Every 234&nbsp;KB prompt body crosses the air twice via router
+      hairpin. Plugging in the cable removes the question entirely.</p>
+    </div>
+    <div class="flag">
+      <h3>Publishing the engine widens exposure</h3>
+      <p>Today <code>inference-vllm</code> has no published ports and the internet cannot reach it. A
+      public <code>inference1</code> makes the engine's single shared key the only thing in front of the
+      GPU. Rotate it so only LiteLLM holds it.</p>
+    </div>
+    <div class="flag open">
+      <h3>What is a token worth here?</h3>
+      <p>Self-hosted means there is no bill to reproduce, so the rate card is a choice. Two useful
+      answers: what the same traffic would cost on a commercial API, and the amortised cost of GPU time.
+      They answer different questions and both can be recorded.</p>
+    </div>
+  </div>
+</section>
+
+</div>
