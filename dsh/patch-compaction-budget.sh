@@ -11,8 +11,19 @@
 # instance, which dsh-web-app/cordis.patch.yml disables - so it never reaches
 # the summarizer that actually runs. This patch adds `config:` to the preset row.
 #
+# After 0.1.5 (seen on 0.1.7 and 0.2.0) the presets live in
+# dsh-web-app/presets/*.patch.yml and the summarizer budget defaults to
+# headroomTokens (65536), which ends the 8192 truncation upstream. But headroom is
+# ALSO subtracted from the window before the threshold: 240,000 - 16,384 output -
+# 65,536 = 158,080, so stock compacts at ~158k instead of 192k. On that layout the
+# patch also pins headroomTokens to the summarizer budget, putting the threshold
+# at 190,848. (Up to 0.1.5 there is no headroomTokens key, so it is written only
+# on the *.patch.yml layout.)
+#
 # RE-RUN AFTER EVERY dsh UPGRADE/REINSTALL: the shipped presets live in the npx
 # cache and a reinstall restores them to stock. Idempotent.
+#
+#   DSH_PATCH_SEARCH_ROOT extra dir to search (e.g. /opt/dsh)
 #
 #   patch-compaction-budget.sh            apply
 #   patch-compaction-budget.sh --check    report status only
@@ -22,17 +33,19 @@ MODE=apply; [ "${1:-}" = "--check" ] && MODE=check
 MAX_TOKENS="${DSH_COMPACTION_MAX_TOKENS:-32768}"
 RETAIN_TOKENS="${DSH_COMPACTION_RETAIN_TOKENS:-32768}"
 THRESHOLD="${DSH_COMPACTION_THRESHOLD_RATIO:-0.8}"
+HEADROOM_TOKENS="${DSH_COMPACTION_HEADROOM_TOKENS:-$MAX_TOKENS}"
 
 say() { printf '%s\n' "$*"; }
 
-LIST=$(mktemp -t dsh-preset-targets)
+LIST=$(mktemp "${TMPDIR:-/tmp}/dsh-preset-targets.XXXXXX")
 {
-  find "$HOME/.npm/_npx" "$HOME/.nvm" /usr/local/lib/node_modules \
-    -path '*/@deepseek-ai/dsh-agent-presets/presets/*/agent.cordis.yml' 2>/dev/null
+  find "$HOME/.npm/_npx" "$HOME/.nvm" /usr/local/lib/node_modules ${DSH_PATCH_SEARCH_ROOT:-} \
+    \( -path '*/@deepseek-ai/dsh-agent-presets/presets/*/agent.cordis.yml' \
+       -o -path '*/@deepseek-ai/dsh-web-app/presets/*.patch.yml' \) 2>/dev/null
   find "$HOME/.dsh/.agent-presets" -name 'agent.cordis.yml' 2>/dev/null
 } | sort -u > "$LIST"
 
-[ -s "$LIST" ] || { say "no agent.cordis.yml presets found" >&2; exit 1; }
+[ -s "$LIST" ] || { say "no agent presets found" >&2; exit 1; }
 
 rc=0
 while IFS= read -r F; do
@@ -41,9 +54,10 @@ while IFS= read -r F; do
   if grep -qE '^[[:space:]]*# frogs-eye compaction-budget patch$' "$F"; then
     say "patched : $F"; continue
   fi
-  if [ "$MODE" = check ]; then say "stock   : $F (summarizer maxTokens = 8192 default)"; continue; fi
+  if [ "$MODE" = check ]; then say "stock   : $F (plugin defaults: 8192 budget up to 0.1.5, ~158k threshold after)"; continue; fi
   cp "$F" "$F.orig-compaction" 2>/dev/null || true
-  F="$F" MAX_TOKENS="$MAX_TOKENS" RETAIN_TOKENS="$RETAIN_TOKENS" THRESHOLD="$THRESHOLD" python3 - <<'PY' || rc=1
+  F="$F" MAX_TOKENS="$MAX_TOKENS" RETAIN_TOKENS="$RETAIN_TOKENS" THRESHOLD="$THRESHOLD" \
+    HEADROOM_TOKENS="$HEADROOM_TOKENS" python3 - <<'PY' || rc=1
 import os, re
 p = os.environ["F"]
 s = open(p).read()
@@ -57,7 +71,8 @@ block = (m.group(0)
          + f"{ind}config:\n"
          + f"{ind}  maxTokens: {os.environ['MAX_TOKENS']}\n"
          + f"{ind}  retainTokens: {os.environ['RETAIN_TOKENS']}\n"
-         + f"{ind}  thresholdRatio: {os.environ['THRESHOLD']}\n")
+         + f"{ind}  thresholdRatio: {os.environ['THRESHOLD']}\n"
+         + (f"{ind}  headroomTokens: {os.environ['HEADROOM_TOKENS']}\n" if p.endswith(".patch.yml") else ""))
 s = s[:m.start()] + block + s[m.end():]
 open(p, "w").write(s)
 print("patched :", p)

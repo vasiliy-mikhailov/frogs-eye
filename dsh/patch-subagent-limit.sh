@@ -18,9 +18,12 @@
 #
 # WHY THIS IS A CODE PATCH AND NOT CONFIGURATION.
 #
-# dsh ships no breadth limit on delegation (verified on dsh-subagent 0.1.1-rc.2
-# and again on 0.1.5-rc.2, which reads no env vars at all and whose admission
-# gate only guards teardown draining):
+# Up to 0.1.5 dsh ships no breadth limit on delegation (verified on dsh-subagent
+# 0.1.1-rc.2 and again on 0.1.5-rc.2, which reads no env vars at all and whose
+# admission gate only guards teardown draining). Later versions (0.1.7, 0.2.0)
+# have a native `subagent.maxActiveSubagents` (default 8) that REJECTS a spawn
+# beyond it; this patch still applies there and turns that into a queue at its
+# own cap. Before 0.1.7:
 #   * `maxDepth` (default 3) bounds RECURSION, not width.
 #   * `agent-loop.maxParallelToolCalls` bounds tool calls in flight for one
 #     agent step. A background subagent spawn returns immediately and frees the
@@ -62,6 +65,9 @@
 # this silently; prefer a pinned global install (`npm i -g @deepseek-ai/dsh@X`)
 # so the patched file stays put until YOU choose to upgrade.
 #
+#   DSH_PATCH_SEARCH_ROOT              extra dir to search (e.g. a local
+#                                      install root like /opt/dsh)
+#
 #   patch-subagent-limit.sh            apply (idempotent)
 #   patch-subagent-limit.sh --revert   restore the shipped file
 #   patch-subagent-limit.sh --check    report status only
@@ -80,9 +86,9 @@ say() { printf '%s\n' "$*"; }
 # --- locate the installed manager, newest first -----------------------------
 # macOS ships bash 3.2, which has no `mapfile` and no `readarray`; a temp file
 # keeps this portable across every shell the estate actually has.
-LIST=$(mktemp -t dsh-subagent-targets)
+LIST=$(mktemp "${TMPDIR:-/tmp}/dsh-subagent-targets.XXXXXX")
 trap 'rm -f "$LIST"' EXIT
-find "$HOME/.npm/_npx" "$HOME/.nvm" /usr/local/lib/node_modules \
+find "$HOME/.npm/_npx" "$HOME/.nvm" /usr/local/lib/node_modules ${DSH_PATCH_SEARCH_ROOT:-} \
      /opt/homebrew/lib/node_modules "$HOME/.local/lib/node_modules" \
   -path '*/@deepseek-ai/dsh-subagent/lib/index.js' \
   2>/dev/null | grep -v '\.orig$' > "$LIST" || true
