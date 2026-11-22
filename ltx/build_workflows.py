@@ -3,7 +3,7 @@
 The graphs are adapted from Comfy-Org/workflow_templates video_ltx2_5_t2v / video_ltx2_5_i2v (MIT) (two-stage: half-size 8-step pass, x2 latent upsample, 3-step
 refine), with the DiT swapped for the Unsloth Q6_K GGUF (ComfyUI-GGUF's UnetLoaderGGUF), the official int8 Gemma 4
 text encoder, and tiled VAE decode. Nodes titled "ADAPTER ..." are the ones ltx_video_adapter.py fills per job.
-Usage: python build_workflows.py   (checks every link and writes both JSONs into adapter/)
+Usage: python build_workflows.py   (checks every link and writes the t2v, i2v and ext JSONs into adapter/)
 """
 from pathlib import Path
 import json, sys
@@ -73,12 +73,37 @@ def i2v():
     g["364"]["inputs"]["text"] = "The subject in the first frame slowly turns toward the camera and smiles; soft ambient room tone."
     return g
 
+def ext():
+    """Extend: continue an existing clip. The last frames of the source (cut by the adapter into a short mp4 in the
+    input folder) are VAE-encoded into the first latent frames at both stages and pinned (strength 1.0), and the
+    source's last seconds of sound are encoded and pinned at the start of the audio stream; LTXVConcatAVLatent zero-
+    pads the rest, unmasked, so the model continues picture and sound from there. The adapter cuts the overlap off
+    the result and appends the rest to the source."""
+    g = i2v()
+    for nid in ("395", "351", "350"):
+        del g[nid]
+    g["500"] = N("LoadVideo", {"file": "overlap.mp4"}, "ADAPTER overlap clip (tail of the source video)")
+    g["501"] = N("GetVideoComponents", {"video": ["500", 0]}, "Get Video Components (overlap frames + audio)")
+    g["357"]["inputs"].update({"image": ["501", 0], "strength": 1.0})
+    g["357"]["_meta"]["title"] = "LTXVImgToVideoInplace (stage 1, overlap frames pinned)"
+    g["349"]["inputs"].update({"image": ["501", 0], "strength": 1.0})
+    g["349"]["_meta"]["title"] = "LTXVImgToVideoInplace (stage 2, overlap frames pinned)"
+    g["502"] = N("LTXVAudioVAEEncode", {"audio": ["501", 1], "audio_vae": ["386", 0]}, "Encode overlap audio")
+    g["503"] = N("SolidMask", {"value": 0.0, "width": 1, "height": 1}, "Mask 0 = keep")
+    g["504"] = N("SetLatentNoiseMask", {"samples": ["502", 0], "mask": ["503", 0]}, "Pin the overlap audio")
+    g["505"] = N("LTXVConcatAVLatent", {"video_latent": ["377", 0], "audio_latent": ["504", 0]},
+                 "Swap in the pinned overlap audio (zero-padded, unmasked tail is generated)")
+    g["344"]["inputs"]["latent_image"] = ["505", 0]
+    g["364"]["inputs"]["text"] = "The scene continues naturally from the previous shot."
+    return g
+
 # outputs per class (count) from node sources
 OUTS = {"UnetLoaderGGUF":1,"CLIPLoader":1,"VAELoader":1,"LatentUpscaleModelLoader":1,"CLIPTextEncode":1,"PrimitiveInt":1,
  "ComfyMathExpression":3,"LTXVConditioning":2,"EmptyLTXVLatentVideo":1,"LTXVEmptyLatentAudio":1,"LTXVConcatAVLatent":1,
  "RandomNoise":1,"KSamplerSelect":1,"ManualSigmas":1,"LTXVDualCFGGuider":1,"SamplerCustomAdvanced":2,"LTXVSeparateAVLatent":2,
  "LTXVLatentUpsampler":1,"VAEDecodeTiled":1,"LTXVAudioVAEDecode":1,"CreateVideo":1,"SaveVideo":1,"LoadImage":2,
- "ResizeImageMaskNode":1,"LTXVPreprocess":1,"LTXVImgToVideoInplace":1}
+ "ResizeImageMaskNode":1,"LTXVPreprocess":1,"LTXVImgToVideoInplace":1,
+ "LoadVideo":1,"GetVideoComponents":5,"LTXVAudioVAEEncode":1,"SolidMask":1,"SetLatentNoiseMask":1}
 def check(g, name):
     used=set()
     for nid,n in g.items():
@@ -97,6 +122,6 @@ def check(g, name):
         stack += [v[0] for v in g[x]["inputs"].values() if isinstance(v,list)]
     unreach=set(g)-seen
     print(name, "nodes", len(g), "unreachable", unreach)
-for name,g in (("t2v",t2v()),("i2v",i2v())):
+for name,g in (("t2v",t2v()),("i2v",i2v()),("ext",ext())):
     check(g,name)
     json.dump(dict(sorted(g.items(), key=lambda kv:int(kv[0]))), open(Path(__file__).resolve().parent / "adapter" / f"ltx25_distilled_gguf_{name}_api.json","w"), indent=1, ensure_ascii=False)

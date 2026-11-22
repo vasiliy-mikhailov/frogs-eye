@@ -138,6 +138,23 @@ if phase == "main":
     check("T2V content is mp4", st == 200 and mp4[4:8] == b"ftyp" and len(mp4) > 10000, (st, len(mp4), hd.get("Content-Type")))
     check("no workflow metadata in mp4", b"UnetLoaderGGUF" not in mp4 and b"ltx-2.5-22b" not in mp4)
     open("/t/test_t2v.mp4", "wb").write(mp4)
+    # extend: continue the T2V clip by 2 s (its 73 frames are shorter than the 5 s overlap, so all of them are pinned)
+    st, o, _ = req("POST", "/videos", {"model": "ltx-2.5", "prompt": "x", "extend_from": "video_unknown"}, AUTH)
+    check("extend_from an unknown id -> 400", st == 400, (st, o.get("error", {}).get("message")))
+    st, o, _ = req("POST", "/videos", {"model": "ltx-2.5", "prompt": "The fox stops and looks back at the camera, wind in the grass",
+                                       "extend_from": vid, "seconds": "2", "seed": 7}, AUTH)
+    check("extend create", st == 200 and o.get("status") == "queued" and o.get("seconds") == "5", (st, o))
+    oe, dt = wait(o["id"])
+    check("extend completed", oe["status"] == "completed", (round(dt), oe.get("status"), oe.get("error")))
+    st, mp4e, _ = req("GET", "/videos/%s/content" % o["id"], headers=AUTH, raw=True)
+    open("/t/test_ext.mp4", "wb").write(mp4e)
+    import subprocess
+    pr = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,nb_frames,duration", "-of", "json",
+                                    "/t/test_ext.mp4"], capture_output=True, text=True).stdout or "{}")
+    vf = [x for x in pr.get("streams", []) if x.get("codec_type") == "video"]
+    af = [x for x in pr.get("streams", []) if x.get("codec_type") == "audio"]
+    check("extended mp4 = 73 + 48 frames, with sound as long as the picture",
+          vf and vf[0].get("nb_frames") == "121" and af and abs(float(af[0]["duration"]) - 121 / 24) < 0.06, pr)
     # I2V with a generated PNG
     from PIL import Image, ImageDraw
     im = Image.new("RGB", (1024, 704), (30, 60, 120))

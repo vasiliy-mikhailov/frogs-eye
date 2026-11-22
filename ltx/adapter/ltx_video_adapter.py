@@ -12,8 +12,12 @@ local ComfyUI running LTX-2.5 distilled (GGUF DiT) on the Halo's RTX 4090. Built
 - Jobs persist in LTX_STATE. run.sh restarts the whole container when ComfyUI or the adapter exits, so after a
   restart queued and in-flight jobs are re-queued and rendered from the start. ComfyUI prompt ids derive from the job
   id, which only guards against submitting a job twice to a ComfyUI that outlived the adapter.
-- Self-heal: a job that times out, a ComfyUI that stops answering, or a sticky CUDA error fails the job, then the
-  adapter exits so Docker restarts the container (and with it the CUDA context).
+- Self-heal: a job that times out, a ComfyUI that stops answering, or a sticky CUDA error ends the job, then the
+  adapter exits so Docker restarts the container (and with it the CUDA context). The last two are GPU faults (a
+  Windows TDR resetting the eGPU was seen live), so their job is re-queued once instead of failed.
+- Extend: `extend_from: <video id>` continues a finished video. The last LTX_EXTEND_OVERLAP_FRAMES (5 s) of it are
+  pinned as the first frames and sound of a new render (the ext graph), the overlap is cut off the result and the rest
+  is appended. The job's output is the whole video, which can be extended again, up to LTX_MAX_TOTAL_S.
 - Auth: "Authorization: Bearer <LTX_ENGINE_KEY>" on everything but GET /health; refuses to start without a key.
 """
 import asyncio, base64, copy, hashlib, hmac, io, json, math, os, re, time, uuid
@@ -30,23 +34,28 @@ OUT_DIR = Path(os.environ.get("COMFY_OUTPUT", "/data/out"))
 IN_DIR = Path(os.environ.get("COMFY_INPUT", "/data/input"))
 STATE = Path(os.environ.get("LTX_STATE", "/data/adapter/jobs.json"))
 MAX_PIXELS = int(os.environ.get("LTX_MAX_PIXELS", str(1280 * 704)))
-MAX_FRAMES = int(os.environ.get("LTX_MAX_FRAMES", "241"))
+MAX_FRAMES = int(os.environ.get("LTX_MAX_FRAMES", "481"))  # 20 s at 24 fps: 170 s and 21.6 GB at 1280x704 on the 4090
+OVERLAP_FRAMES = int(os.environ.get("LTX_EXTEND_OVERLAP_FRAMES", "121"))  # 8k+1: 5 s at 24 fps
+MAX_TOTAL_S = float(os.environ.get("LTX_MAX_TOTAL_S", "900"))  # longest video an extension may produce
+XFADE_S = 0.1  # audio crossfade at an extension seam
 DEFAULT_SIZE = os.environ.get("LTX_DEFAULT_SIZE", "1280x704")
 DEFAULT_SECONDS = float(os.environ.get("LTX_DEFAULT_SECONDS", "5"))
 MAX_QUEUE = int(os.environ.get("LTX_MAX_QUEUE", "3"))
-JOB_TIMEOUT = float(os.environ.get("LTX_JOB_TIMEOUT_S", "600"))
+JOB_TIMEOUT = float(os.environ.get("LTX_JOB_TIMEOUT_S", "600"))  # counted from when ComfyUI starts running the job
+QUEUE_WAIT = float(os.environ.get("LTX_QUEUE_WAIT_S", "7200"))  # waiting behind other ComfyUI work (e.g. the editor)
 KEEP_HOURS = float(os.environ.get("LTX_KEEP_HOURS", "24"))
-KEEP_BYTES = int(float(os.environ.get("LTX_KEEP_GB", "10")) * 1e9)
+KEEP_BYTES = int(float(os.environ.get("LTX_KEEP_GB", "30")) * 1e9)
 MAX_PROMPT = int(os.environ.get("LTX_MAX_PROMPT_CHARS", "8000"))
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PX = 4096 * 4096
 DEFAULT_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly"
 HEALTH_PROMPT = "test video generation"  # LiteLLM's health-check probe for video_generation models
-ALLOWED = {"prompt", "size", "seconds", "seed", "negative_prompt", "fps", "model", "user"}
+ALLOWED = {"prompt", "size", "seconds", "seed", "negative_prompt", "fps", "model", "user", "extend_from"}
 MODEL_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 RAW_RE = re.compile(r"ltx[0-9a-f]{32}")
 STICKY_CUDA = re.compile(r"CUDA (error|driver)|cudaError|CUBLAS_STATUS|device-side assert")  # OOM is not sticky
 STARTED = int(time.time())
+RETRY_REASONS = ("a sticky CUDA error", "ComfyUI stopped answering")  # GPU faults: a job is re-queued once
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PX
 
 if not KEY and os.environ.get("LTX_ALLOW_NO_AUTH") != "1":
@@ -54,6 +63,7 @@ if not KEY and os.environ.get("LTX_ALLOW_NO_AUTH") != "1":
 
 T2V = json.loads((WF_DIR / "ltx25_distilled_gguf_t2v_api.json").read_text())
 I2V = json.loads((WF_DIR / "ltx25_distilled_gguf_i2v_api.json").read_text())
+EXT = json.loads((WF_DIR / "ltx25_distilled_gguf_ext_api.json").read_text())
 jobs: dict[str, dict] = {}
 recent: dict[str, tuple[float, str]] = {}  # payload hash -> (time, raw): absorbs LiteLLM's create retries
 queue: asyncio.Queue = asyncio.Queue()
@@ -286,7 +296,7 @@ async def create(request):
                 raise BadRequest("<ltx_args> must be a JSON object")
             prompt = prompt[:i] + prompt[j + 11:]
         prompt = prompt.strip()
-        extra.update({k: fields[k] for k in ("seed", "negative_prompt", "fps") if fields.get(k) not in (None, "")})
+        extra.update({k: fields[k] for k in ("seed", "negative_prompt", "fps", "extend_from") if fields.get(k) not in (None, "")})
         if not prompt:
             raise BadRequest("prompt is required")
         if len(prompt) > MAX_PROMPT:
@@ -303,8 +313,35 @@ async def create(request):
             raise BadRequest("fps must be 8..50")
         if not 0 <= seed <= 0xFFFFFFFFFFFFFFFF:
             raise BadRequest("seed must be in 0..2^64-1")
-        w, h = parse_size(fields.get("size"))
-        frames = frames_for(fields.get("seconds"), fps)
+        ext = None
+        if extra.get("extend_from") not in (None, ""):
+            if image_bytes is not None:
+                raise BadRequest("extend_from cannot be combined with input_reference")
+            src_raw, src = lookup(str(extra["extend_from"]))
+            if not src or src["status"] != "completed" or not src.get("path") or not os.path.exists(src["path"]):
+                raise BadRequest("extend_from must name a completed video that has not expired")
+            try:
+                w, h, fps, src_frames = await source_meta(src)
+            except (RuntimeError, OSError, ValueError, KeyError) as e:
+                raise BadRequest("cannot read the source video (%s)" % type(e).__name__)
+            overlap = min(OVERLAP_FRAMES, (src_frames - 1) // 8 * 8 + 1)
+            max_new = (MAX_FRAMES - OVERLAP_FRAMES) // 8 * 8  # 15 s, also when a short source carries over whole
+            sec = fields.get("seconds")
+            try:
+                sec = float(sec) if sec not in (None, "") else max_new / fps
+            except (TypeError, ValueError):
+                raise BadRequest("seconds must be a number")
+            if not math.isfinite(sec) or not 0 < sec <= 60:
+                raise BadRequest("seconds must be in (0, 60]")
+            new = min(max_new, max(8, round(sec * fps / 8) * 8))
+            if (src_frames + new - 1) / fps > MAX_TOTAL_S:
+                raise BadRequest("the extended video would be longer than %g s" % MAX_TOTAL_S)
+            frames = overlap + new
+            ext = {"extend_from": src_raw, "src_path": src["path"], "src_frames": src_frames, "overlap": overlap,
+                   "total_frames": src_frames + new}
+        else:
+            w, h = parse_size(fields.get("size"))
+            frames = frames_for(fields.get("seconds"), fps)
         model = fields.get("model")
         model = model if url_safe_model(model) else MODEL_ID
         if prompt == HEALTH_PROMPT and image_bytes is None:  # answer LiteLLM's health probe without rendering
@@ -320,7 +357,8 @@ async def create(request):
         return web.json_response({"error": {"message": str(e), "type": "invalid_request_error"}}, status=400)
     except (ValueError, TypeError, OverflowError, AttributeError) as e:
         return web.json_response({"error": {"message": "bad request: %s" % e, "type": "invalid_request_error"}}, status=400)
-    key = hashlib.sha256(json.dumps([prompt, neg, seed if extra.get("seed") is not None else None, fps, w, h, frames, model]).encode()
+    key = hashlib.sha256(json.dumps([prompt, neg, seed if extra.get("seed") is not None else None, fps, w, h, frames, model,
+                                     ext and ext["extend_from"]]).encode()
                          + (png or b"")).hexdigest()
     hit = recent.get(key)
     if hit and time.time() - hit[0] < 30 and hit[1] in jobs:
@@ -331,6 +369,9 @@ async def create(request):
     job = {"raw": raw, "status": "queued", "progress": 0, "created_at": int(time.time()), "prompt": prompt,
            "negative": neg, "seed": seed, "fps": fps, "frames": frames, "seconds": round((frames - 1) / fps, 2),
            "w": w, "h": h, "image": None, "model_id": model}
+    if ext:
+        job.update(ext)
+        job["seconds"] = round((ext["total_frames"] - 1) / fps, 2)
     try:
         if png is not None:
             IN_DIR.mkdir(parents=True, exist_ok=True)
@@ -395,8 +436,119 @@ async def health(request):
                              status=200 if good else 503)
 
 
+async def run_ffmpeg(*args, timeout: float = 900) -> str:
+    """Run ffmpeg/ffprobe without blocking the event loop; return stdout, raise with the stderr tail on failure."""
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("%s timed out" % args[0])
+    if proc.returncode != 0:
+        print("[ltx-adapter] %s failed: %s" % (args[0], err.decode("utf-8", "replace")[-1500:]), flush=True)
+        raise RuntimeError("%s failed" % args[0])
+    return out.decode()
+
+
+async def probe_video(path: str) -> tuple[int, int, float, int, float]:
+    """(width, height, fps, frames, duration) from the container metadata, without decoding."""
+    info = json.loads(await run_ffmpeg("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                       "stream=width,height,r_frame_rate,nb_frames,duration", "-of", "json", path, timeout=60))
+    st = info["streams"][0]
+    num, den = (st.get("r_frame_rate") or "24/1").split("/")
+    fps = float(num) / float(den or 1)
+    dur = float(st.get("duration") or 0)
+    frames = int(st["nb_frames"]) if str(st.get("nb_frames", "")).isdigit() else round(dur * fps)
+    return int(st["width"]), int(st["height"]), fps, frames, dur
+
+
+async def source_meta(src: dict) -> tuple[int, int, int, int]:
+    """(w, h, fps, frames) of a finished job's video; probed for jobs recovered from disk."""
+    if src.get("w") and src.get("h") and src.get("fps"):
+        return src["w"], src["h"], src["fps"], src.get("total_frames") or src["frames"]
+    w, h, fps, frames, _ = await probe_video(src["path"])
+    return w, h, int(round(fps)), frames
+
+
+async def prepare_overlap(job: dict):
+    """Cut the source's last `overlap` frames (and their sound) into the input folder for the ext graph.
+    Frames are retimed by number (settb=1/fps, setpts=N) at a constant rate and counted, not cut by -t: a half-frame seek
+    margin otherwise shifts the first frame into the next output slot and -t drops the last (seen live, 120 of 121)."""
+    fps, ov = job["fps"], job["overlap"]
+    start = job["src_frames"] - ov
+    ss = max(0.0, (start - 0.5) / fps)
+    name = job["raw"] + "_overlap.mp4"
+    IN_DIR.mkdir(parents=True, exist_ok=True)
+    await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-ss", "%.6f" % ss, "-i", job["src_path"],
+                     "-vf", "settb=1/%d,setpts=N" % fps, "-fps_mode", "cfr", "-r", str(fps), "-frames:v", str(ov),
+                     "-af", "atrim=start=%.6f:duration=%.6f,asetpts=PTS-STARTPTS" % (start / fps - ss, ov / fps),
+                     "-c:v", "libx264", "-crf", "10", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", str(IN_DIR / name))
+    got = (await probe_video(str(IN_DIR / name)))[3]
+    if got != ov:
+        raise RuntimeError("generation failed (could cut only %d of %d overlap frames)" % (got, ov))
+    job["overlap_file"] = name
+
+
+# x264 settings shared by every piece the adapter encodes, so pieces join by stream copy (stitchable=1 keeps the
+# headers content-independent); the time base is the frame number at a constant rate.
+X264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-x264-params", "stitchable=1", "-pix_fmt", "yuv420p"]
+
+
+def audio_sidecar(raw: str) -> Path:
+    return OUT_DIR / "ltx" / (raw + "_audio.flac")
+
+
+async def stitch(job: dict):
+    """Append the new part of the rendered segment (after the overlap) to the source without re-encoding the source:
+    only the new frames are encoded, and the video joins by stream copy (each hop used to re-encode everything, and the
+    opening of a long chain lost about 1 dB per hop). Sound lives losslessly in a FLAC sidecar next to each output; the
+    seam is crossfaded over XFADE_S with exact lengths (no drift against the picture) and AAC is made once from it.
+    The first hop normalizes a ComfyUI-made source once, since its x264 headers differ from ours."""
+    fps, ov, seg, raw = job["fps"], job["overlap"], job["path"], job["raw"]
+    ltx_dir = OUT_DIR / "ltx"
+    src_dur, total_dur = job["src_frames"] / fps, job["total_frames"] / fps
+    srcv, newv, lst = (ltx_dir / (raw + suffix) for suffix in ("_srcv.mp4", "_newv.mp4", "_concat.txt"))
+    flac, out = audio_sidecar(raw), str(ltx_dir / (raw + "_ext.mp4"))
+    vfmt = ["-fps_mode", "cfr", "-r", str(fps), "-an"]
+    try:
+        if job["src_path"].endswith("_ext.mp4"):  # our own output: copy its video as is
+            await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-i", job["src_path"], "-map", "0:v", "-c", "copy", str(srcv))
+        else:
+            await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-i", job["src_path"], "-vf", "settb=1/%d,setpts=N" % fps,
+                             *X264, *vfmt, str(srcv), timeout=1800)
+        await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-i", seg, "-vf", "trim=start_frame=%d,settb=1/%d,setpts=N" % (ov, fps),
+                         *X264, *vfmt, str(newv))
+        lst.write_text("file '%s'\nduration %.6f\nfile '%s'\n" % (srcv, src_dur, newv))
+        src_audio = audio_sidecar(Path(job["src_path"]).name.split("_")[0])
+        src_in = str(src_audio) if src_audio.exists() else job["src_path"]
+        await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-i", src_in, "-i", seg, "-filter_complex",
+                         "[0:a]apad,atrim=end={sd:.6f}[a0];[1:a]apad,atrim=start={s1:.6f}:end={e1:.6f},asetpts=PTS-STARTPTS[a1];"
+                         "[a0][a1]acrossfade=d={xf:.3f},aresample=48000[a]".format(
+                             sd=src_dur, s1=ov / fps - XFADE_S, e1=job["frames"] / fps, xf=XFADE_S),
+                         "-map", "[a]", "-c:a", "flac", "-t", "%.6f" % total_dur, str(flac), timeout=1800)
+        await run_ffmpeg("ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(flac),
+                         "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                         "-t", "%.6f" % total_dur, "-movflags", "+faststart", out, timeout=1800)
+    finally:
+        for p in (srcv, newv, lst):
+            p.unlink(missing_ok=True)
+    _, _, _, got, dur = await probe_video(out)
+    if got != job["total_frames"] or abs(dur - total_dur) > 0.5 / fps:
+        raise RuntimeError("generation failed (stitched %d frames / %.3f s, expected %d / %.3f s)"
+                           % (got, dur, job["total_frames"], total_dur))
+    for p in ltx_dir.glob(raw + "_*_.mp4"):  # ComfyUI's segment(s), including one left by a restart mid-stitch
+        p.unlink(missing_ok=True)
+    if job.get("overlap_file"):
+        (IN_DIR / job["overlap_file"]).unlink(missing_ok=True)
+    job["path"] = out
+
+
 def build_graph(job: dict) -> dict:
-    g = copy.deepcopy(I2V if job["image"] else T2V)
+    if job.get("extend_from"):
+        g = copy.deepcopy(EXT)
+        g["500"]["inputs"]["file"] = job["overlap_file"]
+    else:
+        g = copy.deepcopy(I2V if job["image"] else T2V)
     g["372"]["inputs"]["value"] = job["w"]
     g["360"]["inputs"]["value"] = job["h"]
     g["362"]["inputs"]["value"] = job["frames"]
@@ -415,9 +567,17 @@ async def comfy_json(s: ClientSession, method: str, path: str, body=None):
         return r.status, await r.json(content_type=None)
 
 
-async def comfy_queue_has(s: ClientSession, pid: str) -> bool:
+async def comfy_queue_state(s: ClientSession, pid: str):
+    """"running", "pending" or None (not in ComfyUI's queue)."""
     _, q = await comfy_json(s, "GET", "/queue")
-    return any(len(it) > 1 and it[1] == pid for it in q.get("queue_running", []) + q.get("queue_pending", []))
+    for state, key in (("running", "queue_running"), ("pending", "queue_pending")):
+        if any(len(it) > 1 and it[1] == pid for it in q.get(key, [])):
+            return state
+    return None
+
+
+async def comfy_queue_has(s: ClientSession, pid: str) -> bool:
+    return await comfy_queue_state(s, pid) is not None
 
 
 async def comfy_cancel(s: ClientSession, pid: str) -> bool:
@@ -454,15 +614,18 @@ def harvest(entry: dict) -> str | None:
     for out in entry.get("outputs", {}).values():
         for v in out.values():
             for f in (v if isinstance(v, list) else []):
-                if isinstance(f, dict) and str(f.get("filename", "")).endswith(".mp4"):
+                # type "output" only: LoadVideo (extend jobs) reports the clip it loaded as a "type": "input" preview
+                if isinstance(f, dict) and f.get("type") == "output" and str(f.get("filename", "")).endswith(".mp4"):
                     return str(OUT_DIR / f.get("subfolder", "") / f["filename"])
     return None
 
 
 async def run_job(s: ClientSession, job: dict):
-    job["status"], job["started"], job["progress"] = "in_progress", time.time(), 0
-    save_jobs()
-    pid = str(uuid.UUID(job["raw"][3:]))  # fixed per job: never submitted twice to the same ComfyUI
+    # The job stays "queued" while ComfyUI works on something else (another API job, or a graph from the editor);
+    # it turns "in_progress" when ComfyUI starts running it, and JOB_TIMEOUT counts from then.
+    job["started"], job["progress"] = time.time(), 0
+    # fixed per job and attempt: never submitted twice to the same ComfyUI, and a retry never finds the failed attempt
+    pid = str(uuid.UUID(job["raw"][3:]) if not job.get("attempts") else uuid.uuid5(uuid.UUID(job["raw"][3:]), str(job["attempts"])))
     _, h = await comfy_json(s, "GET", "/history/" + pid)
     if pid not in h and not await comfy_queue_has(s, pid):
         st, body = await comfy_json(s, "POST", "/prompt", {"prompt": build_graph(job), "client_id": job["raw"], "prompt_id": pid})
@@ -470,46 +633,59 @@ async def run_job(s: ClientSession, job: dict):
             print("[ltx-adapter] %s ComfyUI rejected the graph: %s" % (job["raw"], json.dumps(body)[:2000]), flush=True)
             raise RuntimeError("generation failed (graph rejected)")
     expected = 25 + 0.33 * job["frames"] * job["w"] * job["h"] / (1280 * 704)  # rough seconds, for progress only
-    polls = 0
-    while True:
+    running_since, polls, last_ok = None, 0, time.time()
+    while pid not in h:
         await asyncio.sleep(2)
         polls += 1
-        elapsed = time.time() - job["started"]
-        job["progress"] = min(95, int(100 * elapsed / max(expected, 1)))
-        if elapsed > JOB_TIMEOUT:  # ~6x the slowest normal render: something is stuck, so restart after failing it
+        now = time.time()
+        try:
+            _, h = await comfy_json(s, "GET", "/history/" + pid)
+            if pid in h:
+                break
+            if running_since is None or polls % 15 == 0:
+                state = await comfy_queue_state(s, pid)
+                if state is None:
+                    _, h = await comfy_json(s, "GET", "/history/" + pid)  # it may have finished in between
+                    if pid in h:
+                        break
+                    raise RuntimeError("generation failed (ComfyUI lost the job)")
+                if state == "running" and running_since is None:
+                    running_since = now
+                    job["status"] = "in_progress"
+                    save_jobs()
+            last_ok = now
+        except (ClientError, asyncio.TimeoutError, ValueError) as e:
+            print("[ltx-adapter] %s poll error %r (retrying)" % (job["raw"], e), flush=True)
+            if time.time() - last_ok > 120:  # the same 120 s as wait_comfy: restart (and retry the job once)
+                job["wedged"] = "ComfyUI stopped answering"
+                raise RuntimeError("generation failed (ComfyUI stopped answering)")
+            continue
+        if running_since is None:
+            if now - job["started"] > QUEUE_WAIT:  # ComfyUI is busy, not stuck: give up on this job only
+                await comfy_cancel(s, pid)
+                raise RuntimeError("generation failed (ComfyUI was busy with other work for %d s)" % QUEUE_WAIT)
+            continue
+        job["progress"] = min(95, int(100 * (now - running_since) / max(expected, 1)))
+        if now - running_since > JOB_TIMEOUT:  # ~6x the slowest normal render: something is stuck, so restart after failing it
             released = await comfy_cancel(s, pid)
             job["wedged"] = "a job timed out" + ("" if released else " and ComfyUI did not release it")
             raise RuntimeError("generation timed out after %d s" % JOB_TIMEOUT)
-        try:
-            _, h = await comfy_json(s, "GET", "/history/" + pid)
-            if pid not in h:
-                if polls % 15 == 0 and not await comfy_queue_has(s, pid):
-                    _, h = await comfy_json(s, "GET", "/history/" + pid)  # it may have finished in between
-                    if pid not in h:
-                        raise RuntimeError("generation failed (ComfyUI lost the job)")
-                if pid not in h:
-                    continue
-        except (ClientError, asyncio.TimeoutError, ValueError) as e:
-            print("[ltx-adapter] %s poll error %r (retrying)" % (job["raw"], e), flush=True)
-            continue
-        entry = h[pid]
-        st = entry.get("status", {})
-        if st.get("status_str") == "error":
-            err = next((m[1] for m in st.get("messages", []) if m[0] == "execution_error"), {})
-            print("[ltx-adapter] %s ComfyUI error: %s" % (job["raw"], json.dumps(err)[:2000]), flush=True)
-            if STICKY_CUDA.search(str(err.get("exception_message", ""))):
-                job["wedged"] = "a sticky CUDA error"
-            raise RuntimeError("generation failed (%s)" % (err.get("node_type") or "execution error"))
-        path = harvest(entry)
-        if path:
-            job["path"] = path
-            try:
-                await comfy_json(s, "POST", "/history", {"delete": [pid]})
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        if st.get("completed"):
-            raise RuntimeError("generation failed (no video output)")
+    entry = h[pid]
+    st = entry.get("status", {})
+    if st.get("status_str") == "error":
+        err = next((m[1] for m in st.get("messages", []) if m[0] == "execution_error"), {})
+        print("[ltx-adapter] %s ComfyUI error: %s" % (job["raw"], json.dumps(err)[:2000]), flush=True)
+        if STICKY_CUDA.search(str(err.get("exception_message", ""))):
+            job["wedged"] = "a sticky CUDA error"
+        raise RuntimeError("generation failed (%s)" % (err.get("node_type") or "execution error"))
+    path = harvest(entry)
+    if not path:
+        raise RuntimeError("generation failed (no video output)")
+    job["path"] = path
+    try:
+        await comfy_json(s, "POST", "/history", {"delete": [pid]})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def worker(app):
@@ -523,23 +699,43 @@ async def worker(app):
                 if not await wait_comfy(s):
                     job["wedged"] = "ComfyUI stopped answering"
                     raise RuntimeError("generation failed (ComfyUI is down)")
+                if job.get("extend_from"):
+                    if not os.path.exists(job["src_path"]):
+                        raise RuntimeError("generation failed (the source video expired before this job ran)")
+                    await prepare_overlap(job)
                 await run_job(s, job)
+                if job.get("extend_from"):
+                    job["progress"] = 97
+                    await stitch(job)
                 job["status"], job["progress"] = "completed", 100
             except Exception as e:  # noqa: BLE001
                 job["status"], job["error"] = "failed", str(e) or type(e).__name__
-            job["completed_at"] = int(time.time())
+                if job.get("extend_from"):  # its overlap cut, segment, sidecar or a bad stitch are of no use
+                    if job.get("overlap_file"):
+                        (IN_DIR / job["overlap_file"]).unlink(missing_ok=True)
+                    for p in list((OUT_DIR / "ltx").glob(raw + "_*.mp4")) + [audio_sidecar(raw)]:
+                        p.unlink(missing_ok=True)
+                    job.pop("path", None)
+            why = job.pop("wedged", None)
+            if why in RETRY_REASONS and job.get("attempts", 0) < 1:
+                # The GPU, not the request, failed (e.g. a Windows TDR reset the eGPU): run the job again after the restart.
+                job["attempts"] = job.get("attempts", 0) + 1
+                job["status"], job["progress"] = "queued", 0
+                job.pop("error", None)
+            else:
+                job["completed_at"] = int(time.time())
             save_jobs()
             print("[ltx-adapter] %s %s %dx%d %df in %.0f s %s" % (raw, job["status"], job["w"], job["h"], job["frames"],
                   max(0, time.time() - job.get("started", time.time())), job.get("error") or ""), flush=True)
-            why = job.pop("wedged", None)
             if why:
-                print("[ltx-adapter] %s; exiting so the container restarts" % why, flush=True)
-                save_jobs()
+                print("[ltx-adapter] %s; exiting so the container restarts%s" % (
+                    why, " (the job runs again)" if job["status"] == "queued" else ""), flush=True)
                 os._exit(1)
 
 
 def expire(job: dict):
-    for p in (job.get("path"), str(IN_DIR / job["image"]) if job.get("image") else None):
+    for p in (job.get("path"), str(IN_DIR / job["image"]) if job.get("image") else None,
+              str(audio_sidecar(job["raw"])) if job.get("raw") else None):
         if p:
             Path(p).unlink(missing_ok=True)
     job["status"] = "expired"
@@ -548,11 +744,13 @@ def expire(job: dict):
 def janitor_pass():
     now = time.time()
     changed = False
+    # sources that queued or running extend jobs will still read (their overlap, then the stitch)
+    needed = {j["src_path"] for j in jobs.values() if j.get("extend_from") and j["status"] in ("queued", "in_progress")}
     for raw, job in list(jobs.items()):
         done = job.get("completed_at")
         if not done:
             continue
-        if job["status"] == "completed" and now - done > KEEP_HOURS * 3600:
+        if job["status"] == "completed" and now - done > KEEP_HOURS * 3600 and job.get("path") not in needed:
             expire(job)
             changed = True
         elif job["status"] == "failed" and job.get("image") and now - done > KEEP_HOURS * 3600:
@@ -564,27 +762,34 @@ def janitor_pass():
             changed = True
     by_path = {j.get("path"): j for j in jobs.values() if j.get("path")}
     files = []
-    for p in (OUT_DIR / "ltx").glob("*.mp4"):
+    sidecars = 0
+    for p in list((OUT_DIR / "ltx").glob("*.mp4")) + list((OUT_DIR / "ltx").glob("*_audio.flac")):
         try:
             st = p.stat()
-            files.append((st.st_mtime, st.st_size, p))
         except OSError:
-            pass
+            continue
+        if p.suffix == ".flac":  # counted, but evicted only together with its video (expire)
+            sidecars += st.st_size
+        else:
+            files.append((st.st_mtime, st.st_size, p))
     files.sort()
-    total = sum(f[1] for f in files)
+    total = sum(f[1] for f in files) + sidecars
     for mtime, size, p in files:
         if total <= KEEP_BYTES:
             break
-        if now - mtime < 3600:
+        if now - mtime < 3600 or str(p) in needed:
             continue
         j = by_path.get(str(p))
         if j:
+            sc = audio_sidecar(j["raw"])
+            size += sc.stat().st_size if sc.exists() else 0
             expire(j)
             changed = True
         else:
             p.unlink(missing_ok=True)
         total -= size
-    for p in list(IN_DIR.glob("ltx*.png")) + list((OUT_DIR / "ltx").glob("ltx*.mp4")):
+    for p in (list(IN_DIR.glob("ltx*.png")) + list(IN_DIR.glob("ltx*_overlap.mp4")) + list((OUT_DIR / "ltx").glob("ltx*.mp4"))
+              + list((OUT_DIR / "ltx").glob("ltx*_audio.flac"))):
         stem = p.stem.split("_")[0]
         try:
             if stem not in jobs and now - p.stat().st_mtime > KEEP_HOURS * 3600:

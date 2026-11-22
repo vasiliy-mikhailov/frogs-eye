@@ -7,7 +7,7 @@ video of a cat chasing a butterfly" then ends with an mp4 in the agent's working
 |---|---|
 | `ltx-video/SKILL.md` | The skill: when to use it, how to write an LTX prompt (one paragraph covering subject, setting, camera, look and **sound**), limits, timing, and delivery. |
 | `ltx-video/scripts/ltx_video.py` | Standard-library CLI: create, wait, download, with `--resume`. Used by agents without the tool (Kimi, terminals). |
-| `plugin/ltx-video/index.js` | A dsh plugin that registers the `ltx_video` tool. dsh uses this instead of the script. |
+| `plugin/ltx-video/index.js` | A dsh plugin that registers the `ltx_video` tool (text-to-video, image-to-video, `extend_from`, `download: false` for intermediate hops, `resume_id`). dsh uses this instead of the script. |
 
 ## Why dsh gets a tool and not just the script
 

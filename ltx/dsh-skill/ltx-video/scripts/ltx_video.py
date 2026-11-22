@@ -3,6 +3,7 @@
 
   python3 ltx_video.py --prompt "..." [--image first_frame.png] [--seconds 5] [--size 1280x704]
                        [--seed N] [--negative "..."] [--fps 24] [--out videos/name.mp4] [--max-wait 900]
+  python3 ltx_video.py --extend <video id> --prompt "what happens next" [--seconds 15] [--out ...]   # make it longer
   python3 ltx_video.py --resume <video id> [--out videos/name.mp4]      # pick up a job that is still running
 
 Talks to https://inference.mikhailov.tech/ltx-2.5/v1 (OpenAI videos API; override with LTX_BASE_URL). The gateway key
@@ -142,14 +143,16 @@ def main():
     ap = argparse.ArgumentParser(description="Generate a video with LTX-2.5 via inference.mikhailov.tech")
     ap.add_argument("--prompt", help="what happens in the clip (English works best)")
     ap.add_argument("--image", help="PNG/JPEG/WebP used as the first frame (image-to-video)")
-    ap.add_argument("--seconds", type=float, default=5, help="clip length, up to 10 (default 5)")
+    ap.add_argument("--seconds", type=float, help="clip length, up to 20 (default 5); with --extend the new seconds, up to 15 (default 15)")
     ap.add_argument("--size", help="WxH, e.g. 1280x704 (default), 704x1280, 896x896; default follows --image's aspect")
     ap.add_argument("--seed", type=int, help="fix for reproducible results (random if omitted, and printed)")
     ap.add_argument("--negative", help="negative prompt (things to avoid)")
     ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--out", help="output .mp4 path (default videos/ltx-<time>.mp4 under the current directory)")
     ap.add_argument("--max-wait", type=float, default=900, help="seconds to wait, queue time included (default 900)")
+    ap.add_argument("--extend", metavar="VIDEO_ID", help="continue this earlier clip (its last 5 s carry over); saves the whole longer video")
     ap.add_argument("--resume", metavar="VIDEO_ID", help="wait for and download an existing job instead of creating one")
+    ap.add_argument("--no-download", action="store_true", help="wait for the render but do not download it (intermediate extension hops)")
     a = ap.parse_args()
     key = api_key()
     t0 = time.time()
@@ -160,7 +163,14 @@ def main():
         if not a.prompt:
             ap.error("--prompt is required (or --resume)")
         seed = a.seed if a.seed is not None else random.randrange(1, 2 ** 48)
-        body = {"model": MODEL, "prompt": a.prompt, "seconds": "%g" % a.seconds, "seed": seed, "fps": a.fps}
+        body = {"model": MODEL, "prompt": a.prompt, "seed": seed}
+        if a.seconds is not None or not a.extend:
+            body["seconds"] = "%g" % (a.seconds if a.seconds is not None else 5)
+        if a.extend:
+            body["extend_from"] = a.extend
+            a.image = a.size = None
+        else:
+            body["fps"] = a.fps
         if a.negative:
             body["negative_prompt"] = a.negative
         if a.image:
@@ -172,7 +182,8 @@ def main():
             body["input_reference"] = "data:%s;base64,%s" % (mime, base64.b64encode(data).decode())
             if not a.size and dims:
                 a.size = size_for(*dims)
-        body["size"] = a.size or "1280x704"
+        if not a.extend:
+            body["size"] = a.size or "1280x704"
         while True:
             st, o, hd = call("POST", "/videos", key, body)
             if st == 429 and time.time() - t0 < a.max_wait:  # one GPU, short queue: wait our turn
@@ -185,7 +196,7 @@ def main():
             print("create failed: HTTP %s: %s" % (st, o.get("error", {}).get("message")), flush=True)
             sys.exit(2 if st == 400 else 1)
         vid = o["id"]
-        print("queued %s: %s, %s s, seed %d" % (vid[:24] + "...", o.get("size"), o.get("seconds"), seed), flush=True)
+        print("queued %s: %s, %s s, seed %d" % (vid, o.get("size"), o.get("seconds"), seed), flush=True)
 
     last, last_print = None, 0
     while True:
@@ -210,12 +221,19 @@ def main():
         err = o.get("error") or {}
         print("generation failed: %s (%s)" % (err.get("message"), err.get("code")), flush=True)
         sys.exit(1)
-    path = out_path(a.out)
-    st, data, _ = call("GET", "/videos/%s/content" % vid, key, raw=True, timeout=300)
-    if st != 200 or data[4:8] != b"ftyp":
-        print("download failed: HTTP %s" % st, flush=True)
-        sys.exit(1)
-    open(path, "wb").write(data)
+    if a.no_download:
+        print("rendered, not downloaded (%s s, %s, %.0f s total)\nvideo id: %s" % (o.get("seconds"), o.get("size"), time.time() - t0, vid), flush=True)
+        return
+    try:
+        st, data, _ = call("GET", "/videos/%s/content" % vid, key, raw=True, timeout=600)
+        if st != 200 or data[4:8] != b"ftyp":
+            raise OSError("HTTP %s" % st)
+        path = out_path(a.out)
+        open(path, "wb").write(data)
+    except (urllib.error.URLError, OSError) as e:
+        print("the video is ready but downloading or saving it failed (%s). Resume with:\n  python3 %s --resume %s%s"
+              % (e, sys.argv[0], vid, " --out " + a.out if a.out else ""), flush=True)
+        sys.exit(3)
     print("saved %s (%s s, %s, %.1f MB, %.0f s total)\nvideo id: %s"
           % (os.path.abspath(path), o.get("seconds"), o.get("size"), len(data) / 1e6, time.time() - t0, vid), flush=True)
 

@@ -109,18 +109,20 @@ export function apply(ctx, config) {
 
   const properties = {
     prompt: { type: "string", description: "One paragraph in English: subject and action, setting and light, camera, look, and the SOUND (ambience, music, quoted speech). Required unless resume_id is given." },
-    seconds: { type: "number", description: "Clip length, 1-10 seconds (default 5)." },
+    seconds: { type: "number", description: "Clip length, 1-20 seconds (default 5). With extend_from: the NEW seconds to add, 1-15 (default 15)." },
     size: { type: "string", description: "WxH: 1280x704 landscape (default), 704x1280 portrait, 896x896 square. With image, the default follows the image's aspect ratio." },
     image: { type: "string", description: "Image-to-video: path (relative to the working directory) of a PNG, JPEG or WebP to use as the first frame." },
     seed: { type: "integer", description: "Fix to reproduce a result; random if omitted (the result reports it)." },
     negative_prompt: { type: "string", description: "What to avoid; rarely needed." },
     out: { type: "string", description: "Where to save the mp4, relative to the working directory (default videos/ltx-<time>.mp4). Never overwrites." },
-    resume_id: { type: "string", description: "Wait for and download a job that an earlier call started but could not finish waiting for." },
+    extend_from: { type: "string", description: "Continue an earlier clip: its video id (from a previous ltx_video result). The last 5 s are carried over, the prompt says what happens next, and the result is the WHOLE longer video (up to 15 min), which can be extended again. size/image are ignored. Ids stay usable for up to 24 h." },
+    download: { type: "boolean", description: "false: wait for the render but do not download it. Use on every hop of a multi-hop extension except the last; each hop's result already contains the earlier ones." },
+    resume_id: { type: "string", description: "Wait for and download a job that an earlier call started but could not finish waiting for (or could not download)." },
   };
 
   ctx.tools.register({
     name: "ltx_video",
-    description: "Generate a short video clip WITH SOUND (1-10 s, up to 1280x704) using LTX-2.5 on the Strix Halo's RTX 4090 via inference.mikhailov.tech, wait for it (about 1 minute per 5 s) and save it as an mp4 in the working directory. Text-to-video, or image-to-video from a still. Load the ltx-video skill first for prompt guidance; one render at a time, so make several clips one after another. Deliver the saved file with present.",
+    description: "Generate a video clip WITH SOUND (1-20 s, up to 1280x704) using LTX-2.5 on the Strix Halo's RTX 4090 via inference.mikhailov.tech, wait for it (about 1 min for 5 s, 3 min for 20 s) and save it as an mp4 in the working directory. Text-to-video, image-to-video from a still, or extend_from an earlier clip to make it longer (+15 s per call, up to 15 min). Load the ltx-video skill first for prompt guidance; one render at a time, so make several clips one after another. Deliver the saved file with present.",
     parameters: { type: "object", properties },
     output: {
       schema: {
@@ -132,7 +134,9 @@ export function apply(ctx, config) {
       },
       render: (_args, v) => [{
         type: "text",
-        text: `Saved ${v.path} (${v.seconds} s, ${v.size}${v.seed !== undefined ? `, seed ${v.seed}` : ""}, ${v.elapsed_s} s). Deliver it with present. Video id: ${v.video_id}`,
+        text: v.path
+          ? `Saved ${v.path} (${v.seconds} s, ${v.size}${v.seed !== undefined ? `, seed ${v.seed}` : ""}, ${v.elapsed_s} s). Deliver it with present. Video id: ${v.video_id}`
+          : `Rendered, not downloaded (${v.seconds} s, ${v.size}${v.seed !== undefined ? `, seed ${v.seed}` : ""}, ${v.elapsed_s} s). Video id: ${v.video_id}`,
       }],
     },
     async execute(args, exec) {
@@ -146,10 +150,14 @@ export function apply(ctx, config) {
       if (!id) {
         if (typeof args.prompt !== "string" || !args.prompt.trim()) throw new Error("ltx_video: prompt is required (or resume_id)");
         seed = Number.isInteger(args.seed) ? args.seed : Math.floor(Math.random() * 2 ** 47) + 1;
-        const body = { model: "ltx-2.5", prompt: args.prompt.trim(), seconds: String(args.seconds ?? 5), seed };
+        const extending = typeof args.extend_from === "string" && args.extend_from.trim();
+        const body = { model: "ltx-2.5", prompt: args.prompt.trim(), seed };
+        if (typeof args.seconds === "number" || (typeof args.seconds === "string" && args.seconds.trim())) body.seconds = String(args.seconds);
+        else if (!extending) body.seconds = "5";  // extensions default to the server's 15 s
+        if (extending) body.extend_from = args.extend_from.trim();
         if (typeof args.negative_prompt === "string" && args.negative_prompt.trim()) body.negative_prompt = args.negative_prompt.trim();
         let size = typeof args.size === "string" && args.size.trim() ? args.size.trim() : undefined;
-        if (typeof args.image === "string" && args.image.trim()) {
+        if (!extending && typeof args.image === "string" && args.image.trim()) {
           const img = await readFile(path.resolve(cwd, args.image.trim()));
           if (img.length > 20 * 1024 * 1024) throw new Error("ltx_video: image is larger than 20 MB");
           const dims = imageSize(img);
@@ -157,7 +165,7 @@ export function apply(ctx, config) {
           body.input_reference = `data:${mime};base64,${img.toString("base64")}`;
           if (!size && dims) size = sizeFor(dims[0], dims[1]);
         }
-        body.size = size ?? "1280x704";
+        if (!extending) body.size = size ?? "1280x704";
         for (;;) {
           const r = await call("POST", "/videos", key, body, signal);
           if (r.status === 429 && Date.now() - started < maxWaitMs) {  // one GPU, short queue: wait our turn
@@ -182,17 +190,24 @@ export function apply(ctx, config) {
         await sleep(5000, signal);
       }
       if (job.status === "failed") throw new Error(`ltx_video: generation failed: ${job.error?.message ?? "unknown error"} (${job.error?.code ?? "no code"})`);
-      const d = await call("GET", `/videos/${id}/content`, key, undefined, signal, true);
-      if (d.status !== 200 || !Buffer.isBuffer(d.data) || d.data.toString("latin1", 4, 8) !== "ftyp") throw new Error(`ltx_video: download failed (HTTP ${d.status}); retry with resume_id "${id}"`);
-      const target = await freePath(cwd, args.out);
-      await writeFile(target, d.data);
+      const base = {
+        seconds: String(job.seconds ?? args.seconds ?? ""), size: String(job.size ?? ""),
+        ...(seed !== undefined ? { seed } : {}), video_id: id, elapsed_s: Math.round((Date.now() - started) / 1000),
+      };
+      if (args.download === false) return { path: "", ...base };
+      let target;
+      try {
+        const d = await call("GET", `/videos/${id}/content`, key, undefined, signal, true);
+        if (d.status !== 200 || !Buffer.isBuffer(d.data) || d.data.toString("latin1", 4, 8) !== "ftyp") throw new Error(`HTTP ${d.status}`);
+        target = await freePath(cwd, args.out);
+        await writeFile(target, d.data);
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        throw new Error(`ltx_video: the video is ready but downloading or saving it failed (${e?.message ?? e}); call ltx_video again with resume_id "${id}" (do not render it again)`);
+      }
       return {
         path: path.relative(cwd, target) || target,
-        seconds: String(job.seconds ?? args.seconds ?? ""),
-        size: String(job.size ?? ""),
-        ...(seed !== undefined ? { seed } : {}),
-        video_id: id,
-        elapsed_s: Math.round((Date.now() - started) / 1000),
+        ...base,
       };
     },
   });
