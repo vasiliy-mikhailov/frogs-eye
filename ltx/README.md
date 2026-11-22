@@ -31,7 +31,7 @@ This directory mirrors `C:\ltx\build` on the Halo. `adapter/` is mounted read-on
 | `adapter_test.py`, `run-test.ps1` | Local API test suite on the Halo, described below. |
 | `gateway_test.py` | End-to-end test through the public URL with the OpenAI SDK. |
 | `dsh-skill/` | The `ltx-video` skill and a dsh plugin tool, so agents (dsh-web, the Mac app, Kimi) can make videos on request. See its README. |
-| `render.ps1`, `render_test.py` | Raw ComfyUI benchmark (bypasses the adapter) that samples GPU memory, utilization and power. |
+| `render.ps1`, `render_test.py` | Raw ComfyUI benchmark (bypasses the adapter) that samples GPU memory, utilization, power, temperature and fan. |
 
 ## Image
 
@@ -272,6 +272,8 @@ Known gaps on the LiteLLM side:
 | T2V 1280×704, 361 frames (15 s) | 160 s | 21.1 GB | 425 W |
 | T2V 1280×704, 481 frames (20 s) | 170 s | 21.6 GB | 428 W |
 | extend a 20 s clip by 15 s (481-frame `ext` render, then stitch) | 204 s + 2 s | — | — |
+
+During a 10 s render (95 s, 436 W) the 4090 went from 42 °C to 70 °C with fans up to 79 %. Its target is 84 °C.
 | via the public gateway: T2V 1280×704 5 s / I2V 1280×704 4 s | 74 s / 61 s | — | — |
 
 The DiT stays resident; ComfyUI offloads and decodes in tiles, so 20 s peaks lower than 10 s. Another GPU user on the
