@@ -1,0 +1,2 @@
+# bash runs these inside Linux containers: a CRLF checkout (Git for Windows defaults to core.autocrlf=true) breaks them
+*.sh text eol=lf
