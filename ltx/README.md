@@ -29,6 +29,7 @@ This directory mirrors `C:\ltx\build` on the Halo. `adapter/` is mounted read-on
 | `start-ltx.ps1` | Recreates the `ltx` container and waits for `/health`. |
 | `adapter_test.py`, `run-test.ps1` | Local API test suite on the Halo, described below. |
 | `gateway_test.py` | End-to-end test through the public URL with the OpenAI SDK. |
+| `dsh-skill/` | The `ltx-video` skill and a dsh plugin tool, so agents (dsh-web, the Mac app, Kimi) can make videos on request. See its README. |
 | `render.ps1`, `render_test.py` | Raw ComfyUI benchmark (bypasses the adapter) that samples GPU memory, utilization and power. |
 
 ## Image
